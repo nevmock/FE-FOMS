@@ -1,12 +1,41 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import Breadcrumbs from '../../../../components/Breadcrumbs.svelte';
+	import { z } from 'zod';
+	import toast, { Toaster } from 'svelte-french-toast';
+	import request from '../../../../utils/request';
+	import { redirect } from '@sveltejs/kit';
 
-	let companyName: string | null = '';
-	let companyCode: string | null = '';
-	let companyAddress: string | null = '';
-	let companyLogo: File | null = null;
-	let previewUrl: string | null = null;
+	const MAX_FILE_SIZE = 2000;
+	const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+
+	const formSchema = z.object({
+		name: z
+			.string()
+			.min(1, { message: 'Name must be at least 1 characters long' })
+			.max(30, { message: 'Name must be at most 30 characters long.' }),
+		code: z.string().min(1, { message: 'Code must be filled in' }),
+		address: z.string().min(1, { message: 'Address must be filled in' }),
+		logoUri: z
+			.any()
+			.refine(
+				(file) => file?.size <= MAX_FILE_SIZE,
+				`The maximum file size that can be uploaded is 2MB`
+			)
+			.refine(
+				(file) => ACCEPTED_IMAGE_TYPES.includes(file?.type),
+				'Only .jpg, .jpeg, .png and .webp formats are supported.'
+			)
+	});
+
+	let companyName: string = '';
+	let companyCode: string = '';
+	let companyAddress: string = '';
+	let companyLogo: File | string = '';
+	let previewUrl: string = '';
+
+	let validations: [];
+	let isLoading: boolean = false;
 
 	function handleFileSelect(e: Event): void {
 		const target = e.target as HTMLInputElement;
@@ -29,6 +58,77 @@
 		e.preventDefault();
 	}
 
+	const HandleCreateCompany = async (e: Event) => {
+		e.preventDefault();
+		validations = [];
+		isLoading = true;
+		toast.loading('Saving data...');
+
+		const validation: any = formSchema.safeParse({
+			name: companyName,
+			code: companyCode,
+			address: companyAddress,
+			logoUri: companyLogo
+		});
+
+		if (validation.success) {
+			validation.error.errors.map((validation: { path: any[]; message: any; }) => {
+				const key = [
+					{
+						name: validation.path[0],
+						message: validation.message
+					}
+				];
+				(validations: any) => [...validations, ...key];
+			});
+			isLoading = false;
+			toast.dismiss();
+			toast.error('Invalid Input.');
+
+			return;
+		}
+
+		let data: any = new FormData();
+		data.append('name', companyName);
+		data.append('code', companyCode);
+		data.append('address', companyAddress);
+		if (companyLogo) {
+			data.append('logo_uri', companyLogo);
+		}
+
+		await request
+			.post('/v1/company', data)
+			.then(function (response) {
+				if (response.data?.code === 200 || response.data?.code === 201) {
+					toast.dismiss();
+					toast.success('Success create company');
+					redirect(302, '/company');
+				}
+				isLoading = false;
+			})
+			.catch(function (error) {
+				if (
+					(error.response?.data?.code === 400 || error.response?.data?.code === 422) &&
+					error.response?.data.status == 'VALIDATION_ERROR'
+				) {
+					validations = error.response?.data.error?.validation;
+					toast.dismiss();
+					toast.error(error.response?.data.error?.message);
+					companyLogo = '';
+				} else if (
+					error.response?.data?.code === 404 &&
+					error.response?.data.status == 'NOT_FOUND'
+				) {
+					toast.dismiss();
+					toast.error(error.response?.data.error?.message);
+				} else if (error.response?.data?.code === 500) {
+					toast.dismiss();
+					toast.error(error.response?.data.error.message);
+				}
+				isLoading = false;
+			});
+	};
+
 	onMount(() => {
 		return () => {
 			if (previewUrl) {
@@ -38,6 +138,7 @@
 	});
 </script>
 
+<Toaster />
 <div class="flex flex-col gap-2">
 	<Breadcrumbs />
 	<h1 class="text-3xl text-gray-900 font-semibold">Create Company</h1>
@@ -48,7 +149,7 @@
 		<h2 class="block text-base font-semibold text-gray-900">Company Profile</h2>
 		<p class="text-sm text-gray-400">Put the Company Profile details in</p>
 	</div>
-	<form class="p-4">
+	<form class="p-4" on:submit={HandleCreateCompany}>
 		<div class="grid gap-6 mb-6 md:grid-cols-2">
 			<div>
 				<label for="company_name" class="block mb-2 text-sm font-medium text-gray-900"
@@ -105,7 +206,11 @@
 					>
 						{#if previewUrl}
 							<div>
-								<img src={previewUrl} alt="Preview" class=" object-contain w-[100px] h-[100px]" />
+								<img
+									src={previewUrl}
+									alt="Preview"
+									class=" object-contain w-[100px] h-[100px]"
+								/>
 							</div>
 						{:else}
 							<div class="flex flex-col items-center justify-center pt-5 pb-6">
